@@ -163,15 +163,18 @@ def render_logo() -> None:
     with open(logo_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("ascii")
 
-    # height larger + padding + object-fit so the SVG isn't visually clipped
+    # Bigger height + generous padding around so the SVG isn't visually clipped
     # by the parent flexbox / block-container.
     st.markdown(
         f'''
-        <div style="display:flex; align-items:center; padding: 8px 0 20px; overflow: visible;">
+        <div style="display:flex; align-items:center;
+                    padding: 24px 0 28px; margin: 0;
+                    overflow: visible; line-height: 0;">
             <img src="data:image/svg+xml;base64,{b64}"
                  alt="Rokky"
-                 style="height: 88px; width: auto; max-width: 100%;
-                        display: block; object-fit: contain; overflow: visible;"/>
+                 style="height: 110px; width: auto; max-width: 100%;
+                        display: block; object-fit: contain; overflow: visible;
+                        margin: 0; padding: 0;"/>
         </div>
         ''',
         unsafe_allow_html=True,
@@ -194,6 +197,7 @@ VAT_TABLE: dict[str, tuple[float, str]] = {
     "BY": (0.200, "Belarus"),
     "CH": (0.081, "Switzerland"),
     "CL": (0.190, "Chile"),
+    "CN": (0.060, "China"),  # Steam tax FAQ uses XC code; Steam global cc=cn pricing
     "CO": (0.190, "Colombia"),
     "CY": (0.190, "Cyprus"),
     "CZ": (0.210, "Czech Republic"),
@@ -263,7 +267,6 @@ EXTRA_COUNTRIES: dict[str, str] = {
     "UY": "Uruguay",
     "KW": "Kuwait",
     "QA": "Qatar",
-    "CN": "China",
 }
 
 
@@ -497,6 +500,152 @@ def floor_to_99(x: float) -> float:
     if n >= 1:
         return round(n - 1 + 0.99, 2)
     return round(x, 2)
+
+
+# ----------------------------------------------------------------------------
+# Valve suggested-pricing snapshot (Mode B)
+# ----------------------------------------------------------------------------
+#
+# Steam's official suggested pricing matrix lives in the partner backend (login
+# only). We approximate it as a "local price per 1 USD" multiplier per currency,
+# derived from observed Valve patterns at common USD tiers ($9.99, $19.99,
+# $29.99, $59.99). For PPP-discounted regions (RU/CIS/LATAM/SASIA/INR) the
+# multiplier is intentionally below FX. Snapshot ~mid-2025; refresh if Valve
+# updates the matrix.
+
+VALVE_USD_MULTIPLIER: dict[str, float] = {
+    # Tier 1: parity / minor adjustments
+    "USD":       1.00,
+    "EUR":       0.93,
+    "GBP":       0.78,
+    "CHF":       0.95,
+    "AUD":       1.55,
+    "CAD":       1.40,
+    "NZD":       1.70,
+    "NOK":       11.0,
+    "PLN":       4.50,
+
+    # ASIA (mostly local FX / mild discount)
+    "JPY":       150.0,
+    "KRW":       1300.0,
+    "TWD":       31.0,
+    "HKD":       7.80,
+    "SGD":       1.35,
+    "MYR":       4.50,
+    "THB":       35.0,
+    "IDR":       15500.0,
+    "PHP":       55.0,
+    "VND":       23000.0,
+    "INR":       25.0,         # PPP-discounted vs ~83 FX
+    "USD_SASIA": 0.45,         # heavy USD discount tier for SASIA
+
+    # CN
+    "CNY":       6.70,
+
+    # RU-CIS (PPP-discounted)
+    "RUB":       28.0,         # vs ~95 FX
+    "UAH":       30.0,
+    "KZT":       250.0,
+    "USD_CIS":   0.50,
+
+    # LATAM (PPP-discounted)
+    "BRL":       1.85,         # vs ~5 FX (R$19.99 for ~$9.99)
+    "MXN":       12.5,
+    "CLP":       600.0,
+    "COP":       2300.0,
+    "PEN":       2.50,
+    "UYU":       25.0,
+    "CRC":       350.0,
+    "USD_LATAM": 0.60,
+
+    # MENA (mostly parity, USD_MENA discounted)
+    "ILS":       3.60,
+    "AED":       3.67,
+    "SAR":       3.75,
+    "QAR":       3.60,
+    "KWD":       0.30,
+    "ZAR":       15.0,
+    "USD_MENA":  0.60,
+}
+
+# Representative cc per tier (used to synthesize raw_results in Mode B and to
+# decide which country represents each currency).
+TIER_REPRESENTATIVE_CC: dict[str, str] = {
+    # ROW
+    "USD": "US", "EUR": "DE", "GBP": "GB", "AUD": "AU", "CAD": "CA",
+    "CHF": "CH", "NOK": "NO", "NZD": "NZ", "PLN": "PL",
+    # ASIA
+    "JPY": "JP", "KRW": "KR", "TWD": "TW", "HKD": "HK", "SGD": "SG",
+    "MYR": "MY", "THB": "TH", "IDR": "ID", "PHP": "PH", "VND": "VN",
+    "INR": "IN", "USD_SASIA": "BD",
+    # CN
+    "CNY": "CN",
+    # RU-CIS
+    "RUB": "RU", "UAH": "UA", "KZT": "KZ", "USD_CIS": "BY",
+    # LATAM
+    "BRL": "BR", "MXN": "MX", "CLP": "CL", "COP": "CO",
+    "PEN": "PE", "UYU": "UY", "CRC": "CR", "USD_LATAM": "AR",
+    # MENA
+    "ILS": "IL", "AED": "AE", "SAR": "SA", "QAR": "QA", "KWD": "KW",
+    "ZAR": "ZA", "USD_MENA": "MA",
+}
+
+# Currencies that don't use decimal subunits in normal Steam pricing.
+ZERO_DECIMAL_CURRENCIES: set[str] = {
+    "JPY", "KRW", "IDR", "VND", "CLP", "COP", "KZT", "UYU", "CRC",
+}
+
+
+def round_psy_currency(price: float, currency: str) -> float:
+    """
+    Per-currency psychological rounding for synthesized Mode B prices.
+    Decimal currencies → floor_to_99 (e.g., 14.32 → 13.99).
+    Zero-decimal     → snap to nearest integer ending in 99 / 9.
+    """
+    if price is None:
+        return None
+    if currency in ZERO_DECIMAL_CURRENCIES:
+        n = int(round(price))
+        if n < 100:
+            return float(n)
+        # Prefer N99 ending: round to nearest 100 then subtract 1
+        rounded = round(n / 100.0) * 100
+        return float(int(rounded) - 1)  # e.g., 1980 → 1999, 1948 → 1899
+    return floor_to_99(price)
+
+
+def synthesize_raw_results_from_usd(base_usd: float) -> dict[str, dict]:
+    """
+    Build a synthetic raw_results dict (cc → price_overview) from a USD anchor,
+    using the hardcoded Valve multipliers + per-currency ψ-rounding.
+
+    Output is in the same shape as build_pricing_table()'s raw_results so it
+    plugs into build_recommendations() unchanged.
+    """
+    raw: dict[str, dict] = {}
+    for tier, multiplier in VALVE_USD_MULTIPLIER.items():
+        rep_cc = TIER_REPRESENTATIVE_CC.get(tier)
+        if not rep_cc:
+            continue
+
+        # USD-tier currency string is "USD" — recommender's relabel_currency
+        # converts (cc, "USD") → tier via USD_TIER_BY_CC.
+        currency_str = "USD" if tier.startswith("USD") else tier
+
+        local_price_raw = base_usd * multiplier
+        local_price = round_psy_currency(local_price_raw, currency_str if not tier.startswith("USD") else "USD")
+
+        # Steam Store API stores prices /100 (always, including JPY/KRW)
+        final_minor = int(round(local_price * 100))
+
+        raw[rep_cc] = {
+            "currency": currency_str,
+            "final": final_minor,
+            "initial": final_minor,
+            "discount_percent": 0,
+            "final_formatted": f"{currency_str} {local_price:.2f}",
+        }
+    return raw
 
 
 # ----------------------------------------------------------------------------
@@ -964,7 +1113,38 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Parameters")
-        appid = st.text_input("Steam AppID", value="730", help="e.g. 730 = Counter-Strike 2").strip()
+
+        mode = st.radio(
+            "Input mode",
+            options=[
+                "Steam AppID (live prices)",
+                "Base USD price (Valve matrix)",
+            ],
+            index=0,
+            help=(
+                "AppID — fetch live regional prices from the Steam Store API.\n\n"
+                "Base USD — synthesize prices from a hardcoded snapshot of Valve's "
+                "suggested-pricing matrix (no API for this matrix; numbers are "
+                "approximations of typical Valve pricing per USD tier)."
+            ),
+        )
+
+        appid = ""
+        base_usd = 0.0
+        if mode.startswith("Steam AppID"):
+            appid = st.text_input(
+                "Steam AppID",
+                value="730",
+                help="e.g. 730 = Counter-Strike 2",
+            ).strip()
+        else:
+            base_usd = st.number_input(
+                "Base USD price",
+                min_value=0.0, max_value=999.99, value=29.99, step=1.0,
+                format="%.2f",
+                help="Anchor USD price; we synthesize regional prices from Valve's matrix.",
+            )
+
         distributor_fee = st.number_input(
             "Distributor fee, %",
             min_value=0.0, max_value=99.0, value=20.0, step=0.5,
@@ -973,104 +1153,90 @@ def main() -> None:
         run = st.button("Calculate", type="primary", use_container_width=True)
 
     if not run:
-        st.info("👈 Set parameters on the left and click **Calculate**.")
+        st.info("👈 Pick an input mode, set parameters, and click **Calculate**.")
         st.stop()
 
-    if not appid.isdigit():
-        st.error("AppID must be a number, e.g. `730`.")
-        st.stop()
+    # ---- Mode-specific input handling ----
+    if mode.startswith("Steam AppID"):
+        if not appid.isdigit():
+            st.error("AppID must be a number, e.g. `730`.")
+            st.stop()
 
-    meta = fetch_app_meta(appid)
-    app_name = (meta or {}).get("name") or f"AppID {appid}"
+        meta = fetch_app_meta(appid)
+        app_name = (meta or {}).get("name") or f"AppID {appid}"
 
-    progress_bar = st.progress(0.0, text="Fetching prices from Steam Store API…")
-    df, fx_rates, fx_last, raw_results = build_pricing_table(
-        appid=appid,
-        distributor_fee_pct=distributor_fee,
-        progress_cb=lambda p: progress_bar.progress(p, text=f"Fetching prices… {int(p*100)}%"),
-    )
-    progress_bar.empty()
+        progress_bar = st.progress(0.0, text="Fetching prices from Steam Store API…")
+        _df, fx_rates, fx_last, raw_results = build_pricing_table(
+            appid=appid,
+            distributor_fee_pct=distributor_fee,
+            progress_cb=lambda p: progress_bar.progress(p, text=f"Fetching prices… {int(p*100)}%"),
+        )
+        progress_bar.empty()
+
+        subtitle = f"**AppID:** `{appid}` · "
+        download_label_suffix = appid
+        st.subheader(app_name)
+    else:
+        if base_usd <= 0:
+            st.error("Base USD price must be greater than 0.")
+            st.stop()
+
+        with st.spinner("Synthesizing prices from Valve's suggested-pricing matrix…"):
+            fx_rates, fx_last = fetch_fx_rates()
+            raw_results = synthesize_raw_results_from_usd(base_usd)
+
+        st.subheader(f"Synthetic pricing for ${base_usd:.2f} USD anchor")
+        subtitle = ""
+        download_label_suffix = f"base_{base_usd:.2f}"
+        st.warning(
+            "ℹ️ Mode B uses a **hardcoded snapshot of Valve's suggested-pricing "
+            "matrix** (per-currency multipliers reflecting Valve's PPP-adjusted "
+            "tiers). Numbers are approximations — Valve's actual partner-backend "
+            "matrix may differ. Refresh the snapshot in the code if Valve updates "
+            "their tiers."
+        )
 
     rec = build_recommendations(raw_results, fx_rates, distributor_fee)
 
-    st.subheader(app_name)
     st.markdown(
-        f"**AppID:** `{appid}` · "
+        f"{subtitle}"
         f"**Distributor fee:** {distributor_fee}% · "
         f"**FX update:** {fx_last or 'unknown'}"
     )
 
-    tab_detail, tab_rec = st.tabs([
-        "📊 All regions (detailed)",
-        "🎯 Recommendations by package",
-    ])
+    # ---- Single section: Recommendations by package ----
+    render_recommendations(rec, distributor_fee)
 
-    # ---- Tab 1: detailed per-country ----
-    with tab_detail:
-        valid_df = df[df["Note"] == ""].drop(columns=["Note", "cc"]).reset_index(drop=True)
-        skipped_df = df[df["Note"] != ""][["Region", "Currency", "Note"]].reset_index(drop=True)
-
-        st.dataframe(
-            valid_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Local price":               st.column_config.NumberColumn(format="%.2f"),
-                "USD price (FX)":            st.column_config.NumberColumn(format="$%.2f"),
-                "USD price ex-VAT":          st.column_config.NumberColumn(format="$%.2f"),
-                "Publisher revenue (local)": st.column_config.NumberColumn(format="%.2f"),
-                "Publisher revenue (USD)":   st.column_config.NumberColumn(format="$%.2f"),
-            },
-        )
-
-        with st.expander(f"Regions without data ({len(skipped_df)})"):
-            if skipped_df.empty:
-                st.write("Prices retrieved for all regions ✓")
-            else:
-                st.dataframe(skipped_df, use_container_width=True, hide_index=True)
-
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
-        st.download_button(
-            "💾 Download CSV (all regions)",
-            data=valid_df.to_csv(index=False).encode("utf-8"),
-            file_name=f"steam_pricing_{appid}_{ts}.csv",
-            mime="text/csv",
-        )
-
-    # ---- Tab 2: recommendations ----
-    with tab_rec:
-        render_recommendations(rec, distributor_fee)
-
-        # Combined CSV export of all recommendations
-        all_rows = []
-        for pkg in PACKAGE_ORDER:
-            for r in rec.get(pkg, {}).get("rows", []):
-                all_rows.append({
-                    "package": pkg,
-                    "is_base": r["is_base"],
-                    "is_changed": r["is_changed"],
-                    "tier": r["tier"],
-                    "country": r["country"],
-                    "vat_pct": r["vat_pct"],
-                    "current_local_price": r["current_local_price"],
-                    "current_retail_usd": r["current_retail_usd"],
-                    "current_pub_usd": r["current_pub_usd"],
-                    "target_pub_usd": r["target_pub_usd"],
-                    "rec_pub_usd": r["rec_pub_usd"],
-                    "delta_pub_usd": r["delta_pub_usd"],
-                    "gap_pct": round(r["gap_pct"], 4) if r["gap_pct"] is not None else None,
-                    "rec_retail_usd_raw": r["rec_retail_usd_raw"],
-                    "rec_retail_usd_psy": r["rec_retail_usd_psy"],
-                    "rec_retail_local": r["rec_retail_local"],
-                })
-        rec_df = pd.DataFrame(all_rows)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
-        st.download_button(
-            "💾 Download CSV (recommendations)",
-            data=rec_df.to_csv(index=False).encode("utf-8"),
-            file_name=f"steam_pricing_rec_{appid}_{ts}.csv",
-            mime="text/csv",
-        )
+    # Combined CSV export of all recommendations
+    all_rows = []
+    for pkg in PACKAGE_ORDER:
+        for r in rec.get(pkg, {}).get("rows", []):
+            all_rows.append({
+                "package": pkg,
+                "is_base": r["is_base"],
+                "is_changed": r["is_changed"],
+                "tier": r["tier"],
+                "country": r["country"],
+                "vat_pct": r["vat_pct"],
+                "current_local_price": r["current_local_price"],
+                "current_retail_usd": r["current_retail_usd"],
+                "current_pub_usd": r["current_pub_usd"],
+                "target_pub_usd": r["target_pub_usd"],
+                "rec_pub_usd": r["rec_pub_usd"],
+                "delta_pub_usd": r["delta_pub_usd"],
+                "gap_pct": round(r["gap_pct"], 4) if r["gap_pct"] is not None else None,
+                "rec_retail_usd_raw": r["rec_retail_usd_raw"],
+                "rec_retail_usd_psy": r["rec_retail_usd_psy"],
+                "rec_retail_local": r["rec_retail_local"],
+            })
+    rec_df = pd.DataFrame(all_rows)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    st.download_button(
+        "💾 Download CSV (recommendations)",
+        data=rec_df.to_csv(index=False).encode("utf-8"),
+        file_name=f"steam_pricing_rec_{download_label_suffix}_{ts}.csv",
+        mime="text/csv",
+    )
 
     st.markdown("---")
     st.caption(
