@@ -506,70 +506,77 @@ def floor_to_99(x: float) -> float:
 # Valve suggested-pricing snapshot (Mode B)
 # ----------------------------------------------------------------------------
 #
-# Steam's official suggested pricing matrix lives in the partner backend (login
-# only). We approximate it as a "local price per 1 USD" multiplier per currency,
-# derived from observed Valve patterns at common USD tiers ($9.99, $19.99,
-# $29.99, $59.99). For PPP-discounted regions (RU/CIS/LATAM/SASIA/INR) the
-# multiplier is intentionally below FX. Snapshot ~mid-2025; refresh if Valve
-# updates the matrix.
+# Steam's official suggested pricing matrix lives in the partner backend
+# (https://partner.steamgames.com/pricing/explorer — page is public but data
+# is loaded from a confidential endpoint). The snapshot below is captured by
+# manual readout of two anchor tiers in the explorer using the
+# **Multi-variable conversion** method (PPP + FX + comparable-entertainment
+# cost). Snapshot date: data the explorer reported as "January 2026".
+#
+# We store actual Valve prices for the two anchors and linearly interpolate
+# for the other 39 tiers. After interpolation we ψ-round per currency so the
+# numbers look Valve-like (.99 endings or N99 for zero-decimal currencies).
 
-VALVE_USD_MULTIPLIER: dict[str, float] = {
-    # Tier 1: parity / minor adjustments
-    "USD":       1.00,
-    "EUR":       0.93,
-    "GBP":       0.78,
-    "CHF":       0.95,
-    "AUD":       1.55,
-    "CAD":       1.40,
-    "NZD":       1.70,
-    "NOK":       11.0,
-    "PLN":       4.50,
+# Official Valve USD price tiers (41 tiers, from the explorer's tier picker)
+VALVE_TIERS: list[float] = [
+    0.99, 1.99, 2.99, 3.99, 4.99, 5.99, 6.99, 7.99, 8.99, 9.99,
+    10.99, 11.99, 12.99, 13.99, 14.99, 15.99, 16.99, 17.99, 18.99, 19.99,
+    24.99, 29.99, 34.99, 39.99, 44.99, 49.99, 54.99, 59.99,
+    64.99, 69.99, 74.99, 79.99, 84.99, 89.99, 99.99,
+    109.99, 119.99, 129.99, 139.99, 149.99, 199.99,
+]
 
-    # ASIA (mostly local FX / mild discount)
-    "JPY":       150.0,
-    "KRW":       1300.0,
-    "TWD":       31.0,
-    "HKD":       7.80,
-    "SGD":       1.35,
-    "MYR":       4.50,
-    "THB":       35.0,
-    "IDR":       15500.0,
-    "PHP":       55.0,
-    "VND":       23000.0,
-    "INR":       25.0,         # PPP-discounted vs ~83 FX
-    "USD_SASIA": 0.45,         # heavy USD discount tier for SASIA
+# Two anchor points. Each maps tier_currency → local price in the currency.
+# Both anchors taken from Valve's pricing/explorer with Multi-variable method.
+ANCHOR_LOW = 9.99
+ANCHOR_HIGH = 59.99
 
-    # CN
-    "CNY":       6.70,
-
-    # RU-CIS (PPP-discounted)
-    "RUB":       28.0,         # vs ~95 FX
-    "UAH":       30.0,
-    "KZT":       250.0,
-    "USD_CIS":   0.50,
-
-    # LATAM (PPP-discounted)
-    "BRL":       1.85,         # vs ~5 FX (R$19.99 for ~$9.99)
-    "MXN":       12.5,
-    "CLP":       600.0,
-    "COP":       2300.0,
-    "PEN":       2.50,
-    "UYU":       25.0,
-    "CRC":       350.0,
-    "USD_LATAM": 0.60,
-
-    # MENA (mostly parity, USD_MENA discounted)
-    "ILS":       3.60,
-    "AED":       3.67,
-    "SAR":       3.75,
-    "QAR":       3.60,
-    "KWD":       0.30,
-    "ZAR":       15.0,
-    "USD_MENA":  0.60,
+VALVE_PRICE_TABLE: dict[float, dict[str, float]] = {
+    9.99: {
+        "USD": 9.99,
+        "GBP": 9.09,    "EUR": 10.25,   "CHF": 8.75,
+        "AUD": 13.95,   "CAD": 11.99,   "NZD": 15.75,
+        "NOK": 120.00,  "PLN": 42.49,
+        # ASIA
+        "JPY": 1350,    "KRW": 10500,   "TWD": 216,
+        "HKD": 61.00,   "SGD": 11.25,   "MYR": 25.49,
+        "THB": 205.00,  "IDR": 94499,   "PHP": 329.00,
+        "VND": 149500,  "INR": 499,     "USD_SASIA": 6.29,
+        # CN
+        "CNY": 42.00,
+        # RU-CIS
+        "RUB": 465,     "UAH": 230,     "KZT": 3190,    "USD_CIS": 6.29,
+        # LATAM
+        "BRL": 37.49,   "MXN": 139.99,  "CLP": 6599,    "COP": 26999,
+        "PEN": 25.99,   "UYU": 348,     "CRC": 5200,    "USD_LATAM": 6.29,
+        # MENA
+        "ILS": 35.99,   "AED": 32.75,   "SAR": 25.75,   "QAR": 28.49,
+        "KWD": 2.20,    "ZAR": 104.99,  "USD_MENA": 6.29,
+    },
+    59.99: {
+        "USD": 59.99,
+        "GBP": 53.49,   "EUR": 61.99,   "CHF": 52.49,
+        "AUD": 83.95,   "CAD": 71.99,   "NZD": 91.99,
+        "NOK": 720.00,  "PLN": 254.99,
+        # ASIA
+        "JPY": 7350,    "KRW": 61500,   "TWD": 1030,
+        "HKD": 336.00,  "SGD": 54.99,   "MYR": 129.99,
+        "THB": 1049,    "IDR": 469999,  "PHP": 1649.00,
+        "VND": 743000,  "INR": 2499,    "USD_SASIA": 28.25,
+        # CN
+        "CNY": 200.00,
+        # RU-CIS
+        "RUB": 2300,    "UAH": 1150,    "KZT": 15400,   "USD_CIS": 28.25,
+        # LATAM
+        "BRL": 184.99,  "MXN": 699.99,  "CLP": 32999,   "COP": 134999,
+        "PEN": 129.99,  "UYU": 1910,    "CRC": 27000,   "USD_LATAM": 28.25,
+        # MENA
+        "ILS": 219.99,  "AED": 174.99,  "SAR": 129.99,  "QAR": 136.99,
+        "KWD": 10.95,   "ZAR": 519.99,  "USD_MENA": 28.25,
+    },
 }
 
-# Representative cc per tier (used to synthesize raw_results in Mode B and to
-# decide which country represents each currency).
+# Representative cc per tier (used to synthesize raw_results in Mode B).
 TIER_REPRESENTATIVE_CC: dict[str, str] = {
     # ROW
     "USD": "US", "EUR": "DE", "GBP": "GB", "AUD": "AU", "CAD": "CA",
@@ -590,17 +597,21 @@ TIER_REPRESENTATIVE_CC: dict[str, str] = {
     "ZAR": "ZA", "USD_MENA": "MA",
 }
 
-# Currencies that don't use decimal subunits in normal Steam pricing.
+# Currencies that don't use decimal subunits in normal Steam pricing
+# (ψ-rounding snaps to N99 integer instead of .99 decimal). Membership based
+# on observed Valve pricing/explorer values: these currencies always come back
+# as integers (₽465, ¥1350, ₸3190, etc.) — never with a decimal subunit.
 ZERO_DECIMAL_CURRENCIES: set[str] = {
     "JPY", "KRW", "IDR", "VND", "CLP", "COP", "KZT", "UYU", "CRC",
+    "RUB", "UAH", "INR", "TWD", "PHP", "THB",
 }
 
 
 def round_psy_currency(price: float, currency: str) -> float:
     """
-    Per-currency psychological rounding for synthesized Mode B prices.
+    Per-currency psychological rounding for interpolated Mode B prices.
     Decimal currencies → floor_to_99 (e.g., 14.32 → 13.99).
-    Zero-decimal     → snap to nearest integer ending in 99 / 9.
+    Zero-decimal      → snap to nearest integer ending in 99 (e.g., 1948 → 1899).
     """
     if price is None:
         return None
@@ -608,34 +619,62 @@ def round_psy_currency(price: float, currency: str) -> float:
         n = int(round(price))
         if n < 100:
             return float(n)
-        # Prefer N99 ending: round to nearest 100 then subtract 1
         rounded = round(n / 100.0) * 100
-        return float(int(rounded) - 1)  # e.g., 1980 → 1999, 1948 → 1899
+        return float(int(rounded) - 1)
     return floor_to_99(price)
+
+
+def interpolate_valve_price(usd_tier: float, currency: str) -> float | None:
+    """
+    Two-anchor linear interpolation between Valve's $9.99 and $59.99 columns.
+    For the anchor tiers themselves, returns the exact Valve number.
+    For other tiers, linearly interpolates and applies ψ-rounding so the
+    output looks Valve-like (.99 / N99 endings).
+
+    Tiers above $59.99 or below $9.99 use linear extrapolation (less accurate
+    for extreme tiers — refresh anchors in VALVE_PRICE_TABLE if needed).
+    """
+    p_low = VALVE_PRICE_TABLE[ANCHOR_LOW].get(currency)
+    p_high = VALVE_PRICE_TABLE[ANCHOR_HIGH].get(currency)
+    if p_low is None or p_high is None:
+        return None
+
+    # Exact match for anchors — return the Valve number unmodified.
+    if abs(usd_tier - ANCHOR_LOW) < 1e-6:
+        return float(p_low)
+    if abs(usd_tier - ANCHOR_HIGH) < 1e-6:
+        return float(p_high)
+
+    # Linear interpolation in USD-tier space.
+    t = (usd_tier - ANCHOR_LOW) / (ANCHOR_HIGH - ANCHOR_LOW)
+    raw = p_low + (p_high - p_low) * t
+
+    return round_psy_currency(raw, currency)
 
 
 def synthesize_raw_results_from_usd(base_usd: float) -> dict[str, dict]:
     """
-    Build a synthetic raw_results dict (cc → price_overview) from a USD anchor,
-    using the hardcoded Valve multipliers + per-currency ψ-rounding.
+    Build a synthetic raw_results dict (cc → price_overview) from a USD anchor
+    using Valve's two-anchor matrix + linear interpolation + ψ-rounding.
 
-    Output is in the same shape as build_pricing_table()'s raw_results so it
-    plugs into build_recommendations() unchanged.
+    Output mirrors build_pricing_table()'s raw_results so it plugs into
+    build_recommendations() unchanged.
     """
     raw: dict[str, dict] = {}
-    for tier, multiplier in VALVE_USD_MULTIPLIER.items():
+    for tier in VALVE_PRICE_TABLE[ANCHOR_LOW].keys():
         rep_cc = TIER_REPRESENTATIVE_CC.get(tier)
         if not rep_cc:
             continue
 
-        # USD-tier currency string is "USD" — recommender's relabel_currency
-        # converts (cc, "USD") → tier via USD_TIER_BY_CC.
+        local_price = interpolate_valve_price(base_usd, tier)
+        if local_price is None:
+            continue
+
+        # USD-tier currency string is "USD" — relabel_currency in the recommender
+        # converts (cc, "USD") → USD_CIS / USD_SASIA / etc. via USD_TIER_BY_CC.
         currency_str = "USD" if tier.startswith("USD") else tier
 
-        local_price_raw = base_usd * multiplier
-        local_price = round_psy_currency(local_price_raw, currency_str if not tier.startswith("USD") else "USD")
-
-        # Steam Store API stores prices /100 (always, including JPY/KRW)
+        # Steam Store API stores prices /100 (always, including JPY/KRW).
         final_minor = int(round(local_price * 100))
 
         raw[rep_cc] = {
@@ -1123,9 +1162,10 @@ def main() -> None:
             index=0,
             help=(
                 "AppID — fetch live regional prices from the Steam Store API.\n\n"
-                "Base USD — synthesize prices from a hardcoded snapshot of Valve's "
-                "suggested-pricing matrix (no API for this matrix; numbers are "
-                "approximations of typical Valve pricing per USD tier)."
+                "Base USD — use Valve's suggested-pricing matrix from "
+                "partner pricing/explorer (Multi-variable conversion). Anchored "
+                "at $9.99 and $59.99 with linear interpolation for the other "
+                "39 tiers."
             ),
         )
 
@@ -1138,11 +1178,17 @@ def main() -> None:
                 help="e.g. 730 = Counter-Strike 2",
             ).strip()
         else:
-            base_usd = st.number_input(
-                "Base USD price",
-                min_value=0.0, max_value=999.99, value=29.99, step=1.0,
-                format="%.2f",
-                help="Anchor USD price; we synthesize regional prices from Valve's matrix.",
+            default_idx = VALVE_TIERS.index(29.99) if 29.99 in VALVE_TIERS else 0
+            base_usd = st.selectbox(
+                "Base USD price (Valve tier)",
+                options=VALVE_TIERS,
+                index=default_idx,
+                format_func=lambda x: f"${x:.2f}",
+                help=(
+                    "Pick from Valve's 41 official USD tiers (from the partner "
+                    "pricing/explorer). Exact Valve numbers are used for $9.99 "
+                    "and $59.99 anchors; other tiers are linearly interpolated."
+                ),
             )
 
         distributor_fee = st.number_input(
@@ -1185,16 +1231,24 @@ def main() -> None:
             fx_rates, fx_last = fetch_fx_rates()
             raw_results = synthesize_raw_results_from_usd(base_usd)
 
-        st.subheader(f"Synthetic pricing for ${base_usd:.2f} USD anchor")
+        st.subheader(f"Valve suggested pricing @ ${base_usd:.2f} tier")
         subtitle = ""
         download_label_suffix = f"base_{base_usd:.2f}"
-        st.warning(
-            "ℹ️ Mode B uses a **hardcoded snapshot of Valve's suggested-pricing "
-            "matrix** (per-currency multipliers reflecting Valve's PPP-adjusted "
-            "tiers). Numbers are approximations — Valve's actual partner-backend "
-            "matrix may differ. Refresh the snapshot in the code if Valve updates "
-            "their tiers."
-        )
+        is_anchor = abs(base_usd - ANCHOR_LOW) < 1e-6 or abs(base_usd - ANCHOR_HIGH) < 1e-6
+        if is_anchor:
+            st.success(
+                f"✓ **Exact Valve numbers** for ${base_usd:.2f} (anchor tier from "
+                f"the partner pricing/explorer Multi-variable column, snapshot "
+                f"January 2026)."
+            )
+        else:
+            st.info(
+                f"ℹ️ **Linearly interpolated** between Valve's $9.99 and $59.99 "
+                f"anchor tiers (Multi-variable conversion, snapshot January 2026). "
+                f"For ±5% precision on this tier, refresh the snapshot in "
+                f"`VALVE_PRICE_TABLE` with values copied directly from the "
+                f"explorer for ${base_usd:.2f}."
+            )
 
     rec = build_recommendations(raw_results, fx_rates, distributor_fee)
 
