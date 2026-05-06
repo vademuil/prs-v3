@@ -1,21 +1,21 @@
 """
-Steam Publisher Revenue Calculator + Pricing Recommender
-========================================================
+Price Recommendation Tool by Rokky
+==================================
 
-Streamlit-приложение, которое для заданного Steam AppID:
-  1. Тянет региональные цены через Steam Store API.
-  2. Применяет inclusive-VAT по таблице Steam tax FAQ.
-  3. Вычитает комиссию дистрибьютора.
-  4. Конвертирует всё в USD.
-  5. Дедуплицирует по Steam-валютам (включая разделение USD на тиры
+Streamlit app that, for a given Steam AppID:
+  1. Fetches regional prices via the Steam Store API.
+  2. Applies inclusive VAT from the Steam tax FAQ.
+  3. Subtracts the distributor fee.
+  4. Converts everything to USD.
+  5. Deduplicates by Steam currency tier (USD is split into
      USD / USD_CIS / USD_SASIA / USD_MENA / USD_LATAM).
-  6. Группирует валюты по пакетам (ROW / ASIA / CN / RU-CIS / LATAM / MENA),
-     для каждого пакета выбирает базовую валюту, и рекомендует ПОДНЯТЬ
-     publisher USD у остальных валют до уровня базы (raise-only).
-  7. Из целевого publisher USD считает обратно retail USD c учётом VAT и
-     комиссии дистрибьютора и применяет психологическое округление к .99.
+  6. Groups currencies into packages (ROW / ASIA / CN / RU-CIS / LATAM / MENA),
+     picks a base currency per package, and recommends RAISING publisher USD
+     of the other currencies to match the base (raise-only).
+  7. Reverses target publisher USD back into retail USD using VAT and the
+     distributor fee, then ψ-rounds to .99.
 
-Запуск:
+Run:
     pip install -r requirements.txt
     streamlit run streamlit_app.py
 """
@@ -41,35 +41,35 @@ BRAND = {
     "bg":         "#FFFFFF",
     "text":       "#1A1A1A",
     "green":      "#3DD070",   # success / OK
-    "orange":     "#FF7F42",   # каждое изменение цены
-    "pink":       "#FF3895",   # большой разрыв (>15%)
+    "orange":     "#FF7F42",   # any price change
+    "pink":       "#FF3895",   # large gap (>15%)
 }
-# Полупрозрачные тинты для подсветки строк (чтобы текст оставался читаемым)
+# Translucent tints used as row backgrounds (so text remains readable)
 ROW_TINT_ORANGE = "rgba(255, 127, 66, 0.20)"
 ROW_TINT_PINK   = "rgba(255, 56, 149, 0.20)"
 
 
 def inject_css() -> None:
     """
-    Подгружаем Poppins и точечно стилизуем Streamlit.
+    Load Poppins and apply targeted Streamlit styling.
 
-    Важно: не используем широкие селекторы вроде [class*="st-"] с !important
-    на font-family — это забивает Material Symbols Rounded у иконок Streamlit
-    (стрелка сворачивания сайдбара показывается как текст 'keyboard_double_…').
-    Вместо этого ставим Poppins на корень (cascade) и ЯВНО восстанавливаем
-    шрифт иконок.
+    Important: do NOT use broad selectors like [class*="st-"] with !important
+    on font-family — that overrides Material Symbols Rounded on Streamlit's
+    icons (the sidebar collapse arrow renders as raw text 'keyboard_double_…').
+    Instead, set Poppins at the root (cascade) and EXPLICITLY restore the
+    icon font.
     """
     css = """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
 
-    /* Poppins через корень — каскадируется на текстовые элементы */
+    /* Poppins via the root — cascades to text elements */
     html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {
         font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     }
 
-    /* Восстанавливаем шрифт иконок Material Symbols, чтобы они рендерились
-       глифами, а не сырым текстом */
+    /* Restore the Material Symbols font on icon elements so they render as
+       glyphs and not as raw text */
     [class*="material-icons"],
     [class*="material-symbols"],
     .material-icons,
@@ -85,14 +85,14 @@ def inject_css() -> None:
                      'Material Icons' !important;
     }
 
-    /* Заголовки */
+    /* Headings */
     h1, h2, h3, h4 {
         font-family: 'Poppins', sans-serif;
         font-weight: 600;
         color: #1A1A1A;
     }
 
-    /* Primary-кнопка */
+    /* Primary button */
     .stButton > button[kind="primary"],
     .stButton > button[data-testid="baseButton-primary"] {
         background-color: #4600FF !important;
@@ -108,7 +108,7 @@ def inject_css() -> None:
         box-shadow: 0 4px 12px rgba(70, 0, 255, 0.25);
     }
 
-    /* Download-кнопки в outline-стиле */
+    /* Outline-style download buttons */
     .stDownloadButton > button {
         background-color: #FFFFFF !important;
         color: #4600FF !important;
@@ -121,7 +121,7 @@ def inject_css() -> None:
         color: #FFFFFF !important;
     }
 
-    /* Активный таб подсвечиваем primary */
+    /* Highlight the active tab in the primary color */
     .stTabs [aria-selected="true"] {
         color: #4600FF !important;
     }
@@ -129,7 +129,7 @@ def inject_css() -> None:
         background-color: #4600FF !important;
     }
 
-    /* Цветные точки в легенде */
+    /* Colored dots in the legend */
     .legend-dot {
         display: inline-block;
         width: 14px;
@@ -139,7 +139,7 @@ def inject_css() -> None:
         margin-right: 6px;
     }
 
-    /* Чуть приподнимаем главный контент */
+    /* Lift the main content slightly */
     .block-container {
         padding-top: 2rem;
     }
@@ -149,7 +149,7 @@ def inject_css() -> None:
 
 
 def render_logo() -> None:
-    """Логотип в шапке. Ищется как logo.svg рядом со скриптом."""
+    """Logo in the header. Looked up as logo.svg next to the script."""
     here = os.path.dirname(os.path.abspath(__file__))
     candidates = [
         os.path.join(here, "logo.svg"),
@@ -158,25 +158,29 @@ def render_logo() -> None:
     ]
     logo_path = next((p for p in candidates if os.path.exists(p)), None)
     if not logo_path:
-        return  # graceful — без логотипа просто не рисуем
+        return  # graceful: no logo file, no logo rendered
 
     with open(logo_path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("ascii")
 
+    # height larger + padding + object-fit so the SVG isn't visually clipped
+    # by the parent flexbox / block-container.
     st.markdown(
         f'''
-        <div style="display: flex; align-items: center; gap: 16px; margin-bottom: 8px;">
+        <div style="display:flex; align-items:center; padding: 8px 0 20px; overflow: visible;">
             <img src="data:image/svg+xml;base64,{b64}"
-                 style="height: 56px; width: auto;" alt="logo"/>
+                 alt="Rokky"
+                 style="height: 88px; width: auto; max-width: 100%;
+                        display: block; object-fit: contain; overflow: visible;"/>
         </div>
         ''',
         unsafe_allow_html=True,
     )
 
 # ----------------------------------------------------------------------------
-# VAT-таблица (inclusive). Источник:
-# https://partner.steamgames.com/doc/finance/taxfaq (раздел Current Tax Rates)
-# Снимок на май 2026.
+# VAT table (inclusive). Source:
+# https://partner.steamgames.com/doc/finance/taxfaq (Current Tax Rates section)
+# Snapshot taken May 2026.
 # ----------------------------------------------------------------------------
 
 VAT_TABLE: dict[str, tuple[float, str]] = {
@@ -245,8 +249,8 @@ VAT_TABLE: dict[str, tuple[float, str]] = {
     "ZA": (0.150, "South Africa"),
 }
 
-# Доп. страны без inclusive-VAT, у которых на Steam своя валюта или
-# особый USD-тир. VAT = 0.
+# Extra countries without inclusive VAT but with their own Steam currency
+# or special USD tier. VAT = 0 for these.
 EXTRA_COUNTRIES: dict[str, str] = {
     "US": "United States",
     "CA": "Canada",
@@ -274,40 +278,40 @@ def all_countries() -> dict[str, tuple[float, str]]:
 
 
 # ----------------------------------------------------------------------------
-# USD-тиры. Steam Store API возвращает currency="USD" для нескольких разных
-# ценовых тиров — различаем их по cc вручную.
+# USD tiers. Steam Store API returns currency="USD" for several different
+# price tiers; we differentiate them by cc manually.
 # ----------------------------------------------------------------------------
 
 USD_TIER_BY_CC: dict[str, str] = {
-    # CIS USD-тир
+    # CIS USD tier
     "BY": "USD_CIS",
     "MD": "USD_CIS",
-    "RU": "USD_CIS",   # если Steam ответил USD (после ухода RUB)
+    "RU": "USD_CIS",   # if Steam answered USD (after dropping RUB)
     "UA": "USD_CIS",
     "KZ": "USD_CIS",
     "UZ": "USD_CIS",
 
-    # South Asia USD-тир
+    # South Asia USD tier
     "BD": "USD_SASIA",
 
-    # MENA USD-тир
+    # MENA USD tier
     "MA": "USD_MENA",
     "EG": "USD_MENA",
     "KW": "USD_MENA",
     "QA": "USD_MENA",
-    "TR": "USD_MENA",  # если Steam перевёл в USD
-    "SA": "USD_MENA",  # если Steam ответил USD вместо SAR
+    "TR": "USD_MENA",  # if Steam moved Turkey to USD
+    "SA": "USD_MENA",  # if Steam answered USD instead of SAR
 
-    # LATAM USD-тир
+    # LATAM USD tier
     "AR": "USD_LATAM",
 
-    # Default USD (US, CA, остальное) — без явной мапы → "USD"
+    # Default USD (US, CA, etc.) — countries not in this map → "USD"
 }
 
 # ----------------------------------------------------------------------------
-# Справочник Steam-валют → пакет, override VAT (если нужен), display name.
+# Steam currency directory → package, optional VAT override, display name.
 # package: ROW | ASIA | CN_ONLY | RU_CIS | LATAM | MENA
-# vat_override: если задан — используется вместо VAT представительной страны.
+# vat_override: if set, used instead of the representative country's VAT.
 # ----------------------------------------------------------------------------
 
 CURRENCY_INFO: dict[str, dict] = {
@@ -336,7 +340,7 @@ CURRENCY_INFO: dict[str, dict] = {
     "INR":       {"package": "ASIA",    "name": "Indian Rupee",      "vat_override": None},
     "USD_SASIA": {"package": "ASIA",    "name": "USD (S. Asia tier)", "vat_override": 0.0},
 
-    # CN_ONLY: только CNY
+    # CN_ONLY: CNY only
     "CNY":       {"package": "CN_ONLY", "name": "Chinese Yuan",      "vat_override": None},
 
     # RU_CIS: RUB, USD_CIS, KZT, UAH
@@ -365,7 +369,7 @@ CURRENCY_INFO: dict[str, dict] = {
     "USD_MENA":  {"package": "MENA",    "name": "USD (MENA tier)",   "vat_override": 0.0},
 }
 
-# Базовая валюта пакета
+# Base currency per package
 PACKAGE_BASE_CURRENCY: dict[str, str] = {
     "ROW":     "EUR",
     "ASIA":    "USD_SASIA",
@@ -456,7 +460,7 @@ def fetch_fx_rates() -> tuple[dict[str, float], str]:
 # ----------------------------------------------------------------------------
 
 def steam_minor_to_major(amount_minor) -> float | None:
-    """Steam Store API всегда /100, включая JPY/KRW."""
+    """Steam Store API always uses /100, including JPY/KRW."""
     if amount_minor is None:
         return None
     try:
@@ -466,7 +470,7 @@ def steam_minor_to_major(amount_minor) -> float | None:
 
 
 def relabel_currency(cc: str, currency: str) -> str:
-    """USD → USD_CIS / USD_SASIA / USD_MENA / USD_LATAM по cc."""
+    """USD → USD_CIS / USD_SASIA / USD_MENA / USD_LATAM by cc."""
     if currency != "USD":
         return currency
     return USD_TIER_BY_CC.get(cc, "USD")
@@ -474,19 +478,19 @@ def relabel_currency(cc: str, currency: str) -> str:
 
 def floor_to_99(x: float) -> float:
     """
-    Психологическое округление вниз к ближайшему N.99.
-    Примеры:
+    Psychological rounding down to the nearest N.99.
+    Examples:
       50.24 → 49.99
-      50.99 → 50.99 (уже на границе)
+      50.99 → 50.99 (already on the boundary)
       51.00 → 50.99
       9.50  → 8.99
-      0.50  → 0.50  (для значений <1 не трогаем)
+      0.50  → 0.50  (values <1 are left alone)
     """
     if x is None:
         return None
     if x < 1:
         return round(x, 2)
-    n = int(x)  # floor для положительных
+    n = int(x)  # floor for positive numbers
     boundary = n + 0.99
     if x >= boundary - 1e-9:
         return round(boundary, 2)
@@ -496,7 +500,7 @@ def floor_to_99(x: float) -> float:
 
 
 # ----------------------------------------------------------------------------
-# Build per-country detailed table (Mode A — текущая логика)
+# Build per-country detailed table (current Mode A logic)
 # ----------------------------------------------------------------------------
 
 def compute_country_row(
@@ -508,15 +512,15 @@ def compute_country_row(
     distributor_fee_pct: float,
 ) -> dict:
     base = {
-        "Регион": f"{cc} — {country_name}",
+        "Region": f"{cc} — {country_name}",
         "cc": cc,
-        "Валюта": "—",
-        "Цена в локальной валюте": None,
-        "Цена в USD по курсу": None,
+        "Currency": "—",
+        "Local price": None,
+        "USD price (FX)": None,
         "VAT %": f"{vat_rate * 100:.1f}%" if vat_rate > 0 else "0%",
-        "Цена в USD без VAT": None,
-        "Доход издателя (локальная)": None,
-        "Доход издателя (USD)": None,
+        "USD price ex-VAT": None,
+        "Publisher revenue (local)": None,
+        "Publisher revenue (USD)": None,
         "Note": "",
     }
     if not price_info:
@@ -527,7 +531,7 @@ def compute_country_row(
     local_price = steam_minor_to_major(price_info.get("final"))
     if local_price is None or local_price <= 0:
         base["Note"] = "no price"
-        base["Валюта"] = currency
+        base["Currency"] = currency
         return base
 
     local_ex_vat = local_price / (1 + vat_rate) if vat_rate > 0 else local_price
@@ -543,12 +547,12 @@ def compute_country_row(
         base["Note"] = f"no FX rate for {currency}"
 
     base.update({
-        "Валюта": currency,
-        "Цена в локальной валюте": round(local_price, 2),
-        "Цена в USD по курсу": round(usd_gross, 2) if usd_gross is not None else None,
-        "Цена в USD без VAT": round(usd_ex_vat, 2) if usd_ex_vat is not None else None,
-        "Доход издателя (локальная)": round(publisher_local, 2),
-        "Доход издателя (USD)": round(publisher_usd, 2) if publisher_usd is not None else None,
+        "Currency": currency,
+        "Local price": round(local_price, 2),
+        "USD price (FX)": round(usd_gross, 2) if usd_gross is not None else None,
+        "USD price ex-VAT": round(usd_ex_vat, 2) if usd_ex_vat is not None else None,
+        "Publisher revenue (local)": round(publisher_local, 2),
+        "Publisher revenue (USD)": round(publisher_usd, 2) if publisher_usd is not None else None,
     })
     return base
 
@@ -584,7 +588,7 @@ def build_pricing_table(appid: str, distributor_fee_pct: float, progress_cb=None
 
 
 # ----------------------------------------------------------------------------
-# Pricing recommendations: дедуп, группировка, raise-only, ψ-rounding
+# Pricing recommendations: dedup, grouping, raise-only, ψ-rounding
 # ----------------------------------------------------------------------------
 
 def deduplicate_by_currency_tier(
@@ -592,13 +596,13 @@ def deduplicate_by_currency_tier(
     countries: dict[str, tuple[float, str]],
 ) -> dict[str, dict]:
     """
-    Возвращает {tier: {cc, country_name, currency, local_price, vat_country}}
-    Берём первую страну, в которой увидели данный тир (или для USD-тиров —
-    первую матчащую по USD_TIER_BY_CC).
+    Returns {tier: {cc, country_name, currency, local_price, vat_country}}.
+    Picks the first country we observed for each tier (for USD tiers, the
+    first cc matching USD_TIER_BY_CC).
     """
     tiers: dict[str, dict] = {}
-    # Проходим в детерминированном порядке (USD-тиры приоритетнее, потом остальные)
-    # Чтобы для EUR взять условно DE (а не AT/BE), отсортируем по cc.
+    # Iterate in deterministic order (USD tiers first, then the rest).
+    # Sort by cc so EUR ends up represented by DE rather than AT/BE.
     for cc in sorted(per_country_results.keys()):
         data = per_country_results.get(cc)
         if not data:
@@ -608,7 +612,7 @@ def deduplicate_by_currency_tier(
             continue
         tier = relabel_currency(cc, currency)
         if tier in tiers:
-            continue  # уже есть представитель
+            continue  # already have a representative for this tier
         local_price = steam_minor_to_major(data.get("final"))
         if local_price is None or local_price <= 0:
             continue
@@ -634,7 +638,7 @@ def vat_for_tier(tier: str, vat_country: float) -> float:
 
 
 def fx_rate_for_tier(tier: str, fx_rates: dict[str, float]) -> float | None:
-    """USD-тиры конвертим по USD (rate=1). Остальные — по своей валюте."""
+    """USD tiers convert at USD (rate=1). Others convert by their own currency."""
     if tier.startswith("USD"):
         return 1.0
     return fx_rates.get(tier)
@@ -659,7 +663,7 @@ def reverse_to_retail_usd(
     distributor_fee_pct: float,
 ) -> float:
     """
-    Обратная формула. FX сокращается, поэтому только VAT и dist_fee.
+    Reverse formula. FX cancels out, so only VAT and dist_fee remain.
         retail_usd = target_pub_usd * (1 + vat) / (1 - dist_fee)
     """
     return target_pub_usd * (1 + vat) / (1 - distributor_fee_pct / 100.0)
@@ -671,12 +675,12 @@ def build_recommendations(
     distributor_fee_pct: float,
 ) -> dict[str, dict]:
     """
-    Возвращает {package: {"base_tier", "base_pub_usd", "rows": [...] }}.
+    Returns {package: {"base_tier", "base_pub_usd", "rows": [...] }}.
     """
     countries = all_countries()
     deduped = deduplicate_by_currency_tier(per_country_results, countries)
 
-    # Считаем publisher_usd для каждого тира
+    # Compute publisher_usd for each tier
     enriched: dict[str, dict] = {}
     for tier, data in deduped.items():
         info = CURRENCY_INFO.get(tier)
@@ -697,14 +701,14 @@ def build_recommendations(
             "current_retail_usd": retail_usd,
         }
 
-    # Группируем по пакетам
+    # Group by package
     by_package: dict[str, list[dict]] = {pkg: [] for pkg in PACKAGE_ORDER}
     for tier, item in enriched.items():
         pkg = item["package"]
         if pkg in by_package:
             by_package[pkg].append(item)
 
-    # На каждый пакет: находим базу, считаем target и рекомендации
+    # Per package: find the base, compute target and recommendations
     results: dict[str, dict] = {}
     for pkg, items in by_package.items():
         if not items:
@@ -728,15 +732,15 @@ def build_recommendations(
                 # Raise-only: max(current, base)
                 rec_pub = max(current_pub, target_pub_usd)
                 delta = rec_pub - current_pub
-                # gap_pct = насколько current ниже target, в долях от target
-                # > 0 если нужно поднимать; ≤ 0 если уже выше или равен базе
+                # gap_pct = how far current is below target, as a fraction of target
+                # > 0 → we need to raise;  ≤ 0 → already at or above base
                 if target_pub_usd > 0:
                     gap_pct = (target_pub_usd - current_pub) / target_pub_usd
                 else:
                     gap_pct = 0.0
 
-            # Если цену не меняем (delta == 0 либо None) — не трогаем retail.
-            # Только когда реально поднимаем (delta > 0) — пересчитываем и ψ-округляем.
+            # If we are not changing the price (delta == 0 or None), keep retail
+            # as-is. ψ-rounding is applied only when we are actually raising.
             EPS = 1e-6
             should_change_price = (
                 delta is not None and delta > EPS
@@ -747,13 +751,13 @@ def build_recommendations(
                     rec_pub, item["vat"], distributor_fee_pct
                 )
                 rec_retail_usd_psy = floor_to_99(rec_retail_usd_raw)
-                # local при ψ-округл retail
+                # local computed from ψ-rounded retail USD
                 if item["fx"]:
                     rec_retail_local = rec_retail_usd_psy * item["fx"]
                 else:
                     rec_retail_local = None
             else:
-                # Никаких изменений — рекомендация = текущая retail.
+                # No change — recommendation equals current retail.
                 rec_retail_usd_raw = item["current_retail_usd"]
                 rec_retail_usd_psy = item["current_retail_usd"]
                 rec_retail_local = item["local_price"]
@@ -781,7 +785,7 @@ def build_recommendations(
                 "rec_retail_local": round(rec_retail_local, 2) if rec_retail_local is not None else None,
             })
 
-        # Сортируем: база сверху, далее по delta_pub_usd убыв.
+        # Sort: base on top, then by descending delta_pub_usd
         rows.sort(key=lambda r: (
             0 if r["is_base"] else 1,
             -(r["delta_pub_usd"] or 0)
@@ -801,10 +805,10 @@ def build_recommendations(
 
 def _row_style(row: pd.Series) -> list[str]:
     """
-    Подсветка строки рекомендации:
-      • orange — цена изменена (delta > 0)
-      • pink — цена изменена И gap > 15% (большой разрыв)
-      • без цвета — цена не меняется (база или уже выше базы)
+    Recommendation row styling:
+      • orange — price was raised (delta > 0)
+      • pink — raised AND gap > 15% (large gap from base)
+      • no color — price unchanged (base, or already above base)
     """
     is_changed = bool(row.get("_is_changed"))
     gap = row.get("_gap_pct") or 0.0
@@ -820,18 +824,18 @@ def _row_style(row: pd.Series) -> list[str]:
 
 def render_recommendations(rec: dict[str, dict], distributor_fee_pct: float) -> None:
     st.markdown(
-        f"**Логика:** в каждом пакете выбирается базовая валюта, и для остальных "
-        f"валют publisher USD поднимается до уровня базы (только вверх). "
-        f"Если цена уже даёт ≥ базы — не трогаем (retail остаётся как есть). "
-        f"Если поднимаем — пересчитываем retail с учётом VAT и комиссии "
-        f"дистрибьютора ({distributor_fee_pct}%), затем ψ-округляем до .99."
+        f"**Logic:** in each package a base currency is chosen, and for the other "
+        f"currencies the publisher USD is raised to the base level (raise-only). "
+        f"If a currency already yields ≥ base — leave it (retail unchanged). "
+        f"If we raise — recompute retail using VAT and distributor fee "
+        f"({distributor_fee_pct}%), then ψ-round to .99."
     )
     st.markdown(
         f'''
         <div style="display:flex; gap:24px; align-items:center; font-size:14px; margin: 4px 0 12px;">
-            <span><span class="legend-dot" style="background:{BRAND['orange']};"></span>рекомендуем поднять цену</span>
-            <span><span class="legend-dot" style="background:{BRAND['pink']};"></span>большой разрыв (&gt;15% от базы)</span>
-            <span><span class="legend-dot" style="background:{BRAND['green']};"></span>без изменений</span>
+            <span><span class="legend-dot" style="background:{BRAND['orange']};"></span>raise recommended</span>
+            <span><span class="legend-dot" style="background:{BRAND['pink']};"></span>large gap (&gt;15% from base)</span>
+            <span><span class="legend-dot" style="background:{BRAND['green']};"></span>no change</span>
         </div>
         ''',
         unsafe_allow_html=True,
@@ -845,58 +849,58 @@ def render_recommendations(rec: dict[str, dict], distributor_fee_pct: float) -> 
 
         title = PACKAGE_DISPLAY.get(pkg, pkg)
         if not rows:
-            with st.expander(f"{title} — нет данных", expanded=False):
-                st.info("Не удалось получить цены ни в одной валюте этого пакета.")
+            with st.expander(f"{title} — no data", expanded=False):
+                st.info("Failed to retrieve prices for any currency in this package.")
             continue
 
         if base_pub_usd is None:
-            header = f"{title} · база: {base_tier} (нет цены)"
+            header = f"{title} · base: {base_tier} (no price)"
         else:
-            header = f"{title} · база: {base_tier} · target publisher USD: ${base_pub_usd:.2f}"
+            header = f"{title} · base: {base_tier} · target publisher USD: ${base_pub_usd:.2f}"
 
         with st.expander(header, expanded=(pkg == "ROW")):
             df = pd.DataFrame(rows)
 
-            # Сохраняем служебные поля для стайлера
+            # Keep service fields needed by the styler
             df["_is_changed"] = df["is_changed"]
             df["_gap_pct"] = df["gap_pct"]
 
             display = df.rename(columns={
                 "tier_label": "Tier",
-                "country": "Представитель",
+                "country": "Representative",
                 "currency_raw": "Steam currency",
                 "vat_pct": "VAT %",
-                "current_local_price": "Текущая локальная",
-                "current_retail_usd": "Текущая USD retail",
-                "current_pub_usd": "Текущий pub USD",
+                "current_local_price": "Current local",
+                "current_retail_usd": "Current USD retail",
+                "current_pub_usd": "Current pub USD",
                 "target_pub_usd": "Target pub USD",
                 "rec_pub_usd": "Rec pub USD",
                 "delta_pub_usd": "Δ pub USD",
-                "gap_pct_str": "Разрыв",
+                "gap_pct_str": "Gap",
                 "rec_retail_usd_raw": "Rec retail USD (raw)",
                 "rec_retail_usd_psy": "Rec retail USD (.99)",
                 "rec_retail_local": "Rec retail local",
             })
 
             cols = [
-                "Tier", "Steam currency", "Представитель", "VAT %",
-                "Текущая локальная", "Текущая USD retail",
-                "Текущий pub USD", "Target pub USD", "Разрыв",
+                "Tier", "Steam currency", "Representative", "VAT %",
+                "Current local", "Current USD retail",
+                "Current pub USD", "Target pub USD", "Gap",
                 "Rec pub USD", "Δ pub USD",
                 "Rec retail USD (raw)", "Rec retail USD (.99)",
                 "Rec retail local",
             ]
 
-            # Стайлер применяем по полному display, потом отбираем колонки
+            # Apply styler to full display, then hide service columns
             styled = (
                 display[cols + ["_is_changed", "_gap_pct"]]
                 .style
                 .apply(_row_style, axis=1)
                 .hide(subset=["_is_changed", "_gap_pct"], axis="columns")
                 .format({
-                    "Текущая локальная":      "{:.2f}",
-                    "Текущая USD retail":     "${:.2f}",
-                    "Текущий pub USD":        "${:.2f}",
+                    "Current local":          "{:.2f}",
+                    "Current USD retail":     "${:.2f}",
+                    "Current pub USD":        "${:.2f}",
                     "Target pub USD":         "${:.2f}",
                     "Rec pub USD":            "${:.2f}",
                     "Δ pub USD":              "{:+.2f}",
@@ -908,7 +912,7 @@ def render_recommendations(rec: dict[str, dict], distributor_fee_pct: float) -> 
 
             st.dataframe(styled, use_container_width=True, hide_index=True)
 
-            # ---- Кандидаты на исключение из дистрибуции (gap > 5%) ----
+            # ---- Removal candidates (gap > 5%) ----
             removal_candidates = [
                 r for r in rows
                 if r["is_changed"]
@@ -916,16 +920,16 @@ def render_recommendations(rec: dict[str, dict], distributor_fee_pct: float) -> 
                 and r["gap_pct"] > 0.05
             ]
             if removal_candidates:
-                st.markdown("**Кандидаты на исключение из дистрибуции** (если поднять цену не вариант):")
+                st.markdown("**Removal candidates** (if raising the price is not an option):")
                 items_html = []
                 for r in removal_candidates:
                     gap = r["gap_pct"] * 100
                     color = BRAND["pink"] if r["gap_pct"] > 0.15 else BRAND["orange"]
                     items_html.append(
                         f'<li><span class="legend-dot" style="background:{color};"></span>'
-                        f'<b>{r["tier"]}</b> — разрыв <b>{gap:+.1f}%</b>, '
-                        f'текущий pub USD ${r["current_pub_usd"]}, нужно ${r["rec_pub_usd"]} '
-                        f'(или исключить из дистрибуции)</li>'
+                        f'<b>{r["tier"]}</b> — gap <b>{gap:+.1f}%</b>, '
+                        f'current pub USD ${r["current_pub_usd"]}, target ${r["rec_pub_usd"]} '
+                        f'(or remove from distribution)</li>'
                     )
                 st.markdown(
                     f'<ul style="margin: 4px 0 0 0; padding-left: 18px; line-height: 1.7;">{"".join(items_html)}</ul>',
@@ -934,7 +938,7 @@ def render_recommendations(rec: dict[str, dict], distributor_fee_pct: float) -> 
             else:
                 st.markdown(
                     f'<div style="color:{BRAND["green"]}; font-weight:500; margin-top:8px;">'
-                    f'✓ Все валюты пакета в пределах 5% от базы — кандидатов на исключение нет.'
+                    f'✓ All currencies in this package are within 5% of base — no removal candidates.'
                     f'</div>',
                     unsafe_allow_html=True,
                 )
@@ -942,7 +946,7 @@ def render_recommendations(rec: dict[str, dict], distributor_fee_pct: float) -> 
 
 def main() -> None:
     st.set_page_config(
-        page_title="Steam Publisher Revenue Calculator",
+        page_title="Price Recommendation Tool by Rokky",
         page_icon="💰",
         layout="wide",
     )
@@ -950,39 +954,40 @@ def main() -> None:
     inject_css()
     render_logo()
 
-    st.title("Steam Publisher Revenue Calculator")
+    st.title("Price Recommendation Tool by Rokky")
     st.caption(
-        "Считает доход издателя по региональным ценам Steam с учётом VAT и "
-        "комиссии дистрибьютора, плюс рекомендует целевые цены по пакетам "
-        "(ROW / Asia / CN / RU-CIS / LATAM / MENA) для защиты от cross-border-арбитража."
+        "Calculates publisher revenue from Steam regional prices net of VAT "
+        "and the distributor fee, and recommends target prices per package "
+        "(ROW / Asia / CN / RU-CIS / LATAM / MENA) to guard against "
+        "cross-border arbitrage."
     )
 
     with st.sidebar:
-        st.header("Параметры")
-        appid = st.text_input("Steam AppID", value="730", help="Например, 730 = CS2").strip()
+        st.header("Parameters")
+        appid = st.text_input("Steam AppID", value="730", help="e.g. 730 = Counter-Strike 2").strip()
         distributor_fee = st.number_input(
-            "Комиссия дистрибьютора, %",
+            "Distributor fee, %",
             min_value=0.0, max_value=99.0, value=20.0, step=0.5,
         )
         st.markdown("---")
-        run = st.button("Рассчитать", type="primary", use_container_width=True)
+        run = st.button("Calculate", type="primary", use_container_width=True)
 
     if not run:
-        st.info("👈 Заполни параметры слева и нажми **Рассчитать**.")
+        st.info("👈 Set parameters on the left and click **Calculate**.")
         st.stop()
 
     if not appid.isdigit():
-        st.error("AppID должен быть числом, например `730`.")
+        st.error("AppID must be a number, e.g. `730`.")
         st.stop()
 
     meta = fetch_app_meta(appid)
     app_name = (meta or {}).get("name") or f"AppID {appid}"
 
-    progress_bar = st.progress(0.0, text="Получаем цены из Steam Store API…")
+    progress_bar = st.progress(0.0, text="Fetching prices from Steam Store API…")
     df, fx_rates, fx_last, raw_results = build_pricing_table(
         appid=appid,
         distributor_fee_pct=distributor_fee,
-        progress_cb=lambda p: progress_bar.progress(p, text=f"Получаем цены… {int(p*100)}%"),
+        progress_cb=lambda p: progress_bar.progress(p, text=f"Fetching prices… {int(p*100)}%"),
     )
     progress_bar.empty()
 
@@ -991,42 +996,42 @@ def main() -> None:
     st.subheader(app_name)
     st.markdown(
         f"**AppID:** `{appid}` · "
-        f"**Комиссия дистрибьютора:** {distributor_fee}% · "
+        f"**Distributor fee:** {distributor_fee}% · "
         f"**FX update:** {fx_last or 'unknown'}"
     )
 
     tab_detail, tab_rec = st.tabs([
-        "📊 Все регионы (детально)",
-        "🎯 Рекомендации по пакетам",
+        "📊 All regions (detailed)",
+        "🎯 Recommendations by package",
     ])
 
     # ---- Tab 1: detailed per-country ----
     with tab_detail:
         valid_df = df[df["Note"] == ""].drop(columns=["Note", "cc"]).reset_index(drop=True)
-        skipped_df = df[df["Note"] != ""][["Регион", "Валюта", "Note"]].reset_index(drop=True)
+        skipped_df = df[df["Note"] != ""][["Region", "Currency", "Note"]].reset_index(drop=True)
 
         st.dataframe(
             valid_df,
             use_container_width=True,
             hide_index=True,
             column_config={
-                "Цена в локальной валюте":      st.column_config.NumberColumn(format="%.2f"),
-                "Цена в USD по курсу":          st.column_config.NumberColumn(format="$%.2f"),
-                "Цена в USD без VAT":           st.column_config.NumberColumn(format="$%.2f"),
-                "Доход издателя (локальная)":   st.column_config.NumberColumn(format="%.2f"),
-                "Доход издателя (USD)":         st.column_config.NumberColumn(format="$%.2f"),
+                "Local price":               st.column_config.NumberColumn(format="%.2f"),
+                "USD price (FX)":            st.column_config.NumberColumn(format="$%.2f"),
+                "USD price ex-VAT":          st.column_config.NumberColumn(format="$%.2f"),
+                "Publisher revenue (local)": st.column_config.NumberColumn(format="%.2f"),
+                "Publisher revenue (USD)":   st.column_config.NumberColumn(format="$%.2f"),
             },
         )
 
-        with st.expander(f"Регионы без данных ({len(skipped_df)})"):
+        with st.expander(f"Regions without data ({len(skipped_df)})"):
             if skipped_df.empty:
-                st.write("Цены получены везде ✓")
+                st.write("Prices retrieved for all regions ✓")
             else:
                 st.dataframe(skipped_df, use_container_width=True, hide_index=True)
 
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
         st.download_button(
-            "💾 Скачать CSV (все регионы)",
+            "💾 Download CSV (all regions)",
             data=valid_df.to_csv(index=False).encode("utf-8"),
             file_name=f"steam_pricing_{appid}_{ts}.csv",
             mime="text/csv",
@@ -1036,7 +1041,7 @@ def main() -> None:
     with tab_rec:
         render_recommendations(rec, distributor_fee)
 
-        # Объединённый CSV-экспорт всех рекомендаций
+        # Combined CSV export of all recommendations
         all_rows = []
         for pkg in PACKAGE_ORDER:
             for r in rec.get(pkg, {}).get("rows", []):
@@ -1061,7 +1066,7 @@ def main() -> None:
         rec_df = pd.DataFrame(all_rows)
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
         st.download_button(
-            "💾 Скачать CSV (рекомендации)",
+            "💾 Download CSV (recommendations)",
             data=rec_df.to_csv(index=False).encode("utf-8"),
             file_name=f"steam_pricing_rec_{appid}_{ts}.csv",
             mime="text/csv",
@@ -1069,12 +1074,12 @@ def main() -> None:
 
     st.markdown("---")
     st.caption(
-        "**Источники:** "
+        "**Sources:** "
         "[Steam Store API](https://store.steampowered.com/api/appdetails) · "
         "[Steam tax FAQ](https://partner.steamgames.com/doc/finance/taxfaq) · "
         "[open.er-api.com](https://open.er-api.com) (FX). "
-        "Steam revenue share (30%) НЕ учитывается — расчёт под продажу через дистрибьютора (CD-keys). "
-        "USD-тиры (USD/USD_CIS/USD_SASIA/USD_MENA/USD_LATAM) различаются вручную по cc."
+        "Steam's 30% revenue share is NOT applied — calculation targets distributor (CD-key) sales. "
+        "USD tiers (USD / USD_CIS / USD_SASIA / USD_MENA / USD_LATAM) are differentiated manually by cc."
     )
 
 
