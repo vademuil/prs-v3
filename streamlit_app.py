@@ -1010,126 +1010,170 @@ def _row_style(row: pd.Series) -> list[str]:
     return [color] * len(row)
 
 
-def render_recommendations(rec: dict[str, dict], distributor_fee_pct: float) -> None:
-    st.markdown(
-        f"**Logic:** in each package a base currency is chosen, and for the other "
-        f"currencies the publisher USD is raised to the base level (raise-only). "
-        f"If a currency already yields ≥ base — leave it (retail unchanged). "
-        f"If we raise — recompute retail using VAT and distributor fee "
-        f"({distributor_fee_pct}%), then ψ-round to .99."
-    )
-    st.markdown(
-        f'''
-        <div style="display:flex; gap:24px; align-items:center; font-size:14px; margin: 4px 0 12px;">
-            <span><span class="legend-dot" style="background:{BRAND['orange']};"></span>raise recommended</span>
-            <span><span class="legend-dot" style="background:{BRAND['pink']};"></span>large gap (&gt;15% from base)</span>
-            <span><span class="legend-dot" style="background:{BRAND['green']};"></span>no change</span>
-        </div>
-        ''',
-        unsafe_allow_html=True,
-    )
+def _package_header(pkg: str, block: dict) -> str:
+    """Build the expander title for a package."""
+    title = PACKAGE_DISPLAY.get(pkg, pkg)
+    base_tier = block.get("base_tier")
+    base_pub_usd = block.get("base_pub_usd")
+    if base_pub_usd is None:
+        return f"{title} · base: {base_tier} (no price)"
+    return f"{title} · base: {base_tier} · target ${base_pub_usd:.2f}"
 
-    for pkg in PACKAGE_ORDER:
-        block = rec.get(pkg, {})
-        rows = block.get("rows", [])
-        base_tier = block.get("base_tier")
-        base_pub_usd = block.get("base_pub_usd")
 
-        title = PACKAGE_DISPLAY.get(pkg, pkg)
-        if not rows:
-            with st.expander(f"{title} — no data", expanded=False):
-                st.info("Failed to retrieve prices for any currency in this package.")
-            continue
-
-        if base_pub_usd is None:
-            header = f"{title} · base: {base_tier} (no price)"
-        else:
-            header = f"{title} · base: {base_tier} · target publisher USD: ${base_pub_usd:.2f}"
-
-        with st.expander(header, expanded=(pkg == "ROW")):
-            df = pd.DataFrame(rows)
-
-            # Keep service fields needed by the styler
-            df["_is_changed"] = df["is_changed"]
-            df["_gap_pct"] = df["gap_pct"]
-
-            display = df.rename(columns={
-                "tier_label": "Tier",
-                "country": "Representative",
-                "currency_raw": "Steam currency",
-                "vat_pct": "VAT %",
-                "current_local_price": "Current local",
-                "current_retail_usd": "Current USD retail",
-                "current_pub_usd": "Current pub USD",
-                "target_pub_usd": "Target pub USD",
-                "rec_pub_usd": "Rec pub USD",
-                "delta_pub_usd": "Δ pub USD",
-                "gap_pct_str": "Gap",
-                "rec_retail_usd_raw": "Rec retail USD (raw)",
-                "rec_retail_usd_psy": "Rec retail USD (.99)",
-                "rec_retail_local": "Rec retail local",
-            })
-
-            cols = [
-                "Tier", "Steam currency", "Representative", "VAT %",
-                "Current local", "Current USD retail",
-                "Current pub USD", "Target pub USD", "Gap",
-                "Rec pub USD", "Δ pub USD",
-                "Rec retail USD (raw)", "Rec retail USD (.99)",
-                "Rec retail local",
-            ]
-
-            # Apply styler to full display, then hide service columns
-            styled = (
-                display[cols + ["_is_changed", "_gap_pct"]]
-                .style
-                .apply(_row_style, axis=1)
-                .hide(subset=["_is_changed", "_gap_pct"], axis="columns")
-                .format({
-                    "Current local":          "{:.2f}",
-                    "Current USD retail":     "${:.2f}",
-                    "Current pub USD":        "${:.2f}",
-                    "Target pub USD":         "${:.2f}",
-                    "Rec pub USD":            "${:.2f}",
-                    "Δ pub USD":              "{:+.2f}",
-                    "Rec retail USD (raw)":   "${:.2f}",
-                    "Rec retail USD (.99)":   "${:.2f}",
-                    "Rec retail local":       "{:.2f}",
-                }, na_rep="—")
+def _render_removal_candidates(rows: list[dict]) -> None:
+    """Removal candidates list (gap > 5%) — alternative to raising the price."""
+    candidates = [
+        r for r in rows
+        if r["is_changed"]
+        and r["gap_pct"] is not None
+        and r["gap_pct"] > 0.05
+    ]
+    if candidates:
+        st.markdown("**Removal candidates** (if raising the price is not an option):")
+        items_html = []
+        for r in candidates:
+            gap = r["gap_pct"] * 100
+            color = BRAND["pink"] if r["gap_pct"] > 0.15 else BRAND["orange"]
+            items_html.append(
+                f'<li><span class="legend-dot" style="background:{color};"></span>'
+                f'<b>{r["tier"]}</b> — gap <b>{gap:+.1f}%</b>, '
+                f'current pub USD ${r["current_pub_usd"]}, target ${r["rec_pub_usd"]} '
+                f'(or remove from distribution)</li>'
             )
+        st.markdown(
+            f'<ul style="margin: 4px 0 0 0; padding-left: 18px; line-height: 1.7;">{"".join(items_html)}</ul>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            f'<div style="color:{BRAND["green"]}; font-weight:500; margin-top:8px;">'
+            f'✓ All currencies in this package are within 5% of base — no removal candidates.'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
-            st.dataframe(styled, use_container_width=True, hide_index=True)
 
-            # ---- Removal candidates (gap > 5%) ----
-            removal_candidates = [
-                r for r in rows
-                if r["is_changed"]
-                and r["gap_pct"] is not None
-                and r["gap_pct"] > 0.05
-            ]
-            if removal_candidates:
-                st.markdown("**Removal candidates** (if raising the price is not an option):")
-                items_html = []
-                for r in removal_candidates:
-                    gap = r["gap_pct"] * 100
-                    color = BRAND["pink"] if r["gap_pct"] > 0.15 else BRAND["orange"]
-                    items_html.append(
-                        f'<li><span class="legend-dot" style="background:{color};"></span>'
-                        f'<b>{r["tier"]}</b> — gap <b>{gap:+.1f}%</b>, '
-                        f'current pub USD ${r["current_pub_usd"]}, target ${r["rec_pub_usd"]} '
-                        f'(or remove from distribution)</li>'
-                    )
-                st.markdown(
-                    f'<ul style="margin: 4px 0 0 0; padding-left: 18px; line-height: 1.7;">{"".join(items_html)}</ul>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    f'<div style="color:{BRAND["green"]}; font-weight:500; margin-top:8px;">'
-                    f'✓ All currencies in this package are within 5% of base — no removal candidates.'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
+def _render_simplified_table(rows: list[dict], current_col_label: str) -> None:
+    """
+    Simplified 4-column table for the Recommendations tab:
+      Tier | Representative | <Current Local Price | Current Steam Price> | Recommended Local Price
+    """
+    df = pd.DataFrame(rows)
+    df["_is_changed"] = df["is_changed"]
+    df["_gap_pct"] = df["gap_pct"]
+
+    display = df.rename(columns={
+        "tier_label": "Tier",
+        "country": "Representative",
+        "current_local_price": current_col_label,
+        "rec_retail_local": "Recommended Local Price",
+    })
+
+    cols = ["Tier", "Representative", current_col_label, "Recommended Local Price"]
+
+    styled = (
+        display[cols + ["_is_changed", "_gap_pct"]]
+        .style
+        .apply(_row_style, axis=1)
+        .hide(subset=["_is_changed", "_gap_pct"], axis="columns")
+        .format({
+            current_col_label:          "{:.2f}",
+            "Recommended Local Price":  "{:.2f}",
+        }, na_rep="—")
+    )
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+def _render_full_table(rows: list[dict]) -> None:
+    """Full detailed table for the Details tab — all metrics."""
+    df = pd.DataFrame(rows)
+    df["_is_changed"] = df["is_changed"]
+    df["_gap_pct"] = df["gap_pct"]
+
+    display = df.rename(columns={
+        "tier_label": "Tier",
+        "country": "Representative",
+        "currency_raw": "Steam currency",
+        "vat_pct": "VAT %",
+        "current_local_price": "Current local",
+        "current_retail_usd": "Current USD retail",
+        "current_pub_usd": "Current pub USD",
+        "target_pub_usd": "Target pub USD",
+        "rec_pub_usd": "Rec pub USD",
+        "delta_pub_usd": "Δ pub USD",
+        "gap_pct_str": "Gap",
+        "rec_retail_usd_raw": "Rec retail USD (raw)",
+        "rec_retail_usd_psy": "Rec retail USD (.99)",
+        "rec_retail_local": "Rec retail local",
+    })
+
+    cols = [
+        "Tier", "Steam currency", "Representative", "VAT %",
+        "Current local", "Current USD retail",
+        "Current pub USD", "Target pub USD", "Gap",
+        "Rec pub USD", "Δ pub USD",
+        "Rec retail USD (raw)", "Rec retail USD (.99)",
+        "Rec retail local",
+    ]
+
+    styled = (
+        display[cols + ["_is_changed", "_gap_pct"]]
+        .style
+        .apply(_row_style, axis=1)
+        .hide(subset=["_is_changed", "_gap_pct"], axis="columns")
+        .format({
+            "Current local":          "{:.2f}",
+            "Current USD retail":     "${:.2f}",
+            "Current pub USD":        "${:.2f}",
+            "Target pub USD":         "${:.2f}",
+            "Rec pub USD":            "${:.2f}",
+            "Δ pub USD":              "{:+.2f}",
+            "Rec retail USD (raw)":   "${:.2f}",
+            "Rec retail USD (.99)":   "${:.2f}",
+            "Rec retail local":       "{:.2f}",
+        }, na_rep="—")
+    )
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+
+
+def render_recommendations(rec: dict[str, dict], mode: str) -> None:
+    """
+    Render results as two tabs:
+      • Recommendations — simplified 4-column table per package
+      • Details        — full per-currency metrics
+    `mode` must be "appid" (Mode A) or "base_usd" (Mode B). It only affects
+    the label of the "current" column in the simplified table.
+    """
+    current_col = (
+        "Current Steam Price" if mode == "base_usd" else "Current Local Price"
+    )
+
+    tab_rec, tab_details = st.tabs(["🎯 Recommendations", "📋 Details"])
+
+    with tab_rec:
+        st.markdown(
+            "**We recommend you to set the following prices for each region, "
+            "and also create regional SKUs.**"
+        )
+        for pkg in PACKAGE_ORDER:
+            block = rec.get(pkg, {})
+            rows = block.get("rows", [])
+            if not rows:
+                with st.expander(f"{PACKAGE_DISPLAY.get(pkg, pkg)} — no data", expanded=False):
+                    st.info("No prices for this package.")
+                continue
+            with st.expander(_package_header(pkg, block), expanded=(pkg == "ROW")):
+                _render_simplified_table(rows, current_col)
+                _render_removal_candidates(rows)
+
+    with tab_details:
+        for pkg in PACKAGE_ORDER:
+            block = rec.get(pkg, {})
+            rows = block.get("rows", [])
+            if not rows:
+                continue
+            with st.expander(_package_header(pkg, block), expanded=(pkg == "ROW")):
+                _render_full_table(rows)
 
 
 def main() -> None:
@@ -1203,7 +1247,9 @@ def main() -> None:
         st.stop()
 
     # ---- Mode-specific input handling ----
-    if mode.startswith("Steam AppID"):
+    mode_label = "appid" if mode.startswith("Steam AppID") else "base_usd"
+
+    if mode_label == "appid":
         if not appid.isdigit():
             st.error("AppID must be a number, e.g. `730`.")
             st.stop()
@@ -1219,7 +1265,6 @@ def main() -> None:
         )
         progress_bar.empty()
 
-        subtitle = f"**AppID:** `{appid}` · "
         download_label_suffix = appid
         st.subheader(app_name)
     else:
@@ -1227,39 +1272,17 @@ def main() -> None:
             st.error("Base USD price must be greater than 0.")
             st.stop()
 
-        with st.spinner("Synthesizing prices from Valve's suggested-pricing matrix…"):
+        with st.spinner("Loading Valve's suggested-pricing matrix…"):
             fx_rates, fx_last = fetch_fx_rates()
             raw_results = synthesize_raw_results_from_usd(base_usd)
 
-        st.subheader(f"Valve suggested pricing @ ${base_usd:.2f} tier")
-        subtitle = ""
         download_label_suffix = f"base_{base_usd:.2f}"
-        is_anchor = abs(base_usd - ANCHOR_LOW) < 1e-6 or abs(base_usd - ANCHOR_HIGH) < 1e-6
-        if is_anchor:
-            st.success(
-                f"✓ **Exact Valve numbers** for ${base_usd:.2f} (anchor tier from "
-                f"the partner pricing/explorer Multi-variable column, snapshot "
-                f"January 2026)."
-            )
-        else:
-            st.info(
-                f"ℹ️ **Linearly interpolated** between Valve's $9.99 and $59.99 "
-                f"anchor tiers (Multi-variable conversion, snapshot January 2026). "
-                f"For ±5% precision on this tier, refresh the snapshot in "
-                f"`VALVE_PRICE_TABLE` with values copied directly from the "
-                f"explorer for ${base_usd:.2f}."
-            )
+        st.subheader(f"Valve suggested pricing @ ${base_usd:.2f}")
 
     rec = build_recommendations(raw_results, fx_rates, distributor_fee)
 
-    st.markdown(
-        f"{subtitle}"
-        f"**Distributor fee:** {distributor_fee}% · "
-        f"**FX update:** {fx_last or 'unknown'}"
-    )
-
-    # ---- Single section: Recommendations by package ----
-    render_recommendations(rec, distributor_fee)
+    # ---- Two tabs: Recommendations + Details ----
+    render_recommendations(rec, mode_label)
 
     # Combined CSV export of all recommendations
     all_rows = []
