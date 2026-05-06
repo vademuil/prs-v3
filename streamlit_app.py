@@ -1021,7 +1021,7 @@ def _package_header(pkg: str, block: dict) -> str:
 
 
 def _render_removal_candidates(rows: list[dict]) -> None:
-    """Removal candidates list (gap > 5%) — alternative to raising the price."""
+    """Alternative to raising the price: list currencies that could be dropped from distribution."""
     candidates = [
         r for r in rows
         if r["is_changed"]
@@ -1032,13 +1032,11 @@ def _render_removal_candidates(rows: list[dict]) -> None:
         st.markdown("**Removal candidates** (if raising the price is not an option):")
         items_html = []
         for r in candidates:
-            gap = r["gap_pct"] * 100
             color = BRAND["pink"] if r["gap_pct"] > 0.15 else BRAND["orange"]
             items_html.append(
                 f'<li><span class="legend-dot" style="background:{color};"></span>'
-                f'<b>{r["tier"]}</b> — gap <b>{gap:+.1f}%</b>, '
-                f'current pub USD ${r["current_pub_usd"]}, target ${r["rec_pub_usd"]} '
-                f'(or remove from distribution)</li>'
+                f'<b>{r["tier"]}</b> — raise to ${r["rec_pub_usd"]} '
+                f'(currently ${r["current_pub_usd"]}), or remove from distribution</li>'
             )
         st.markdown(
             f'<ul style="margin: 4px 0 0 0; padding-left: 18px; line-height: 1.7;">{"".join(items_html)}</ul>',
@@ -1055,27 +1053,37 @@ def _render_removal_candidates(rows: list[dict]) -> None:
 
 def _render_simplified_table(rows: list[dict], current_col_label: str) -> None:
     """
-    Simplified 4-column table for the Recommendations tab:
-      Tier | Representative | <Current Local Price | Current Steam Price> | Recommended Local Price
+    3-column table for the Recommendations tab:
+      Tier | <Current Local Price | Current Steam Price> | Recommended Local Price
+
+    Row coloring (orange/pink for raised currencies) is applied via a
+    precomputed style array so the service columns never leak into the UI.
     """
     df = pd.DataFrame(rows)
-    df["_is_changed"] = df["is_changed"]
-    df["_gap_pct"] = df["gap_pct"]
 
     display = df.rename(columns={
         "tier_label": "Tier",
-        "country": "Representative",
         "current_local_price": current_col_label,
         "rec_retail_local": "Recommended Local Price",
     })
 
-    cols = ["Tier", "Representative", current_col_label, "Recommended Local Price"]
+    cols = ["Tier", current_col_label, "Recommended Local Price"]
+    df_display = display[cols].copy()
+
+    # Pre-compute row backgrounds without exposing service columns.
+    def color_row(row: pd.Series) -> list[str]:
+        is_changed = bool(df.loc[row.name, "is_changed"])
+        gap = df.loc[row.name, "gap_pct"] or 0.0
+        if not is_changed:
+            return [""] * len(row)
+        if gap > 0.15:
+            return [f"background-color: {ROW_TINT_PINK}"] * len(row)
+        return [f"background-color: {ROW_TINT_ORANGE}"] * len(row)
 
     styled = (
-        display[cols + ["_is_changed", "_gap_pct"]]
+        df_display
         .style
-        .apply(_row_style, axis=1)
-        .hide(subset=["_is_changed", "_gap_pct"], axis="columns")
+        .apply(color_row, axis=1)
         .format({
             current_col_label:          "{:.2f}",
             "Recommended Local Price":  "{:.2f}",
