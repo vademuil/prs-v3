@@ -50,44 +50,65 @@ ROW_TINT_PINK   = "rgba(255, 56, 149, 0.20)"
 
 
 def inject_css() -> None:
-    """Подгружаем Poppins и кастомизируем стили Streamlit."""
+    """
+    Подгружаем Poppins и точечно стилизуем Streamlit.
+
+    Важно: не используем широкие селекторы вроде [class*="st-"] с !important
+    на font-family — это забивает Material Symbols Rounded у иконок Streamlit
+    (стрелка сворачивания сайдбара показывается как текст 'keyboard_double_…').
+    Вместо этого ставим Poppins на корень (cascade) и ЯВНО восстанавливаем
+    шрифт иконок.
+    """
     css = """
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
 
-    html, body, [class*="css"], [class*="st-"],
-    button, input, select, textarea,
-    .stMarkdown, .stDataFrame, .stTable {
-        font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+    /* Poppins через корень — каскадируется на текстовые элементы */
+    html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {
+        font-family: 'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     }
 
-    /* Главный заголовок и подзаголовки */
+    /* Восстанавливаем шрифт иконок Material Symbols, чтобы они рендерились
+       глифами, а не сырым текстом */
+    [class*="material-icons"],
+    [class*="material-symbols"],
+    .material-icons,
+    .material-icons-round,
+    .material-icons-outlined,
+    .material-symbols-rounded,
+    .material-symbols-outlined,
+    .material-symbols-sharp,
+    [data-testid="stIconMaterial"],
+    span[style*="Material Symbols"],
+    span[style*="material-symbols"] {
+        font-family: 'Material Symbols Rounded', 'Material Symbols Outlined',
+                     'Material Icons' !important;
+    }
+
+    /* Заголовки */
     h1, h2, h3, h4 {
-        font-family: 'Poppins', sans-serif !important;
-        font-weight: 600 !important;
-        color: #1A1A1A !important;
+        font-family: 'Poppins', sans-serif;
+        font-weight: 600;
+        color: #1A1A1A;
     }
 
     /* Primary-кнопка */
-    .stButton > button[kind="primary"] {
+    .stButton > button[kind="primary"],
+    .stButton > button[data-testid="baseButton-primary"] {
         background-color: #4600FF !important;
         color: #FFFFFF !important;
         border: none !important;
         border-radius: 8px !important;
         font-weight: 600 !important;
         padding: 10px 24px !important;
-        transition: all 0.15s ease;
+        transition: background-color 0.15s ease, box-shadow 0.15s ease;
     }
     .stButton > button[kind="primary"]:hover {
         background-color: #3700CC !important;
         box-shadow: 0 4px 12px rgba(70, 0, 255, 0.25);
-        transform: translateY(-1px);
-    }
-    .stButton > button[kind="primary"]:active {
-        transform: translateY(0);
     }
 
-    /* Secondary-кнопки (download) */
+    /* Download-кнопки в outline-стиле */
     .stDownloadButton > button {
         background-color: #FFFFFF !important;
         color: #4600FF !important;
@@ -100,26 +121,12 @@ def inject_css() -> None:
         color: #FFFFFF !important;
     }
 
-    /* Табы */
-    .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-        border-bottom: 1px solid #E5E5E5;
-    }
-    .stTabs [data-baseweb="tab"] {
-        font-weight: 500 !important;
-        color: #707070 !important;
-    }
+    /* Активный таб подсвечиваем primary */
     .stTabs [aria-selected="true"] {
         color: #4600FF !important;
     }
     .stTabs [data-baseweb="tab-highlight"] {
         background-color: #4600FF !important;
-    }
-
-    /* Expanders */
-    .streamlit-expanderHeader,
-    [data-testid="stExpander"] summary {
-        font-weight: 500 !important;
     }
 
     /* Цветные точки в легенде */
@@ -128,18 +135,13 @@ def inject_css() -> None:
         width: 14px;
         height: 14px;
         border-radius: 3px;
-        vertical-align: -2px;
+        vertical-align: middle;
         margin-right: 6px;
     }
 
-    /* Скрываем дефолтный заголовок Streamlit */
-    [data-testid="stHeader"] {
-        background-color: transparent;
-    }
-
-    /* Прижимаем контент чуть ближе к верху */
+    /* Чуть приподнимаем главный контент */
     .block-container {
-        padding-top: 2rem !important;
+        padding-top: 2rem;
     }
     </style>
     """
